@@ -6,10 +6,12 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 // Simplifed xv6 shell.
 
 #define MAXARGS 10
+#define MAXBINFILEPATH 100
 
 // All commands have at least a type. Have looked at the type, the code
 // typically casts the *cmd to some specific cmd type.
@@ -38,6 +40,7 @@ struct pipecmd {
 
 int fork1(void);  // Fork but exits on failure.
 struct cmd *parsecmd(char*);
+char *searchpath(char *);
 
 // Execute cmd.  Never returns.
 void
@@ -60,22 +63,49 @@ runcmd(struct cmd *cmd)
     ecmd = (struct execcmd*)cmd;
     if(ecmd->argv[0] == 0)
       exit(0);
-    fprintf(stderr, "exec not implemented\n");
-    // Your code here ...
+    // Your code here ...  
+    execv(searchpath(ecmd->argv[0]), ecmd->argv);
+    perror("execute ecmd error");
     break;
 
   case '>':
   case '<':
     rcmd = (struct redircmd*)cmd;
-    fprintf(stderr, "redir not implemented\n");
     // Your code here ...
+    if (close(rcmd->fd) == -1) {
+        perror("redir close error");    
+        exit(1);
+    }
+
+    if (cmd->type == '>') {
+        r = open(rcmd->file, rcmd->mode, S_IRWXU);
+    } else {
+        r = open(rcmd->file, rcmd->mode);
+    }
+    if (r == -1) {
+        perror("redir open error");
+        exit(1);
+    }
     runcmd(rcmd->cmd);
     break;
 
   case '|':
     pcmd = (struct pipecmd*)cmd;
-    fprintf(stderr, "pipe not implemented\n");
     // Your code here ...
+    pipe(p);
+    if (fork() == 0) {
+        close(1);
+        dup(p[1]);
+        close(p[0]);
+        close(p[1]);
+        runcmd(pcmd->left);
+    } else {        
+        close(0);
+        dup(p[0]);
+        close(p[0]);
+        close(p[1]);
+        runcmd(pcmd->right);
+    }
     break;
   }    
   exit(0);
@@ -329,4 +359,32 @@ parseexec(char **ps, char *es)
   }
   cmd->argv[argc] = 0;
   return ret;
+}
+
+char *
+searchpath(char *exe)
+{
+    DIR *d;
+    struct dirent *dir;
+    
+    char *paths = getenv("PATH");
+    char *pathdir = strtok(paths, ":");
+    while (pathdir != NULL) {
+        d = opendir(pathdir);
+        if (d == NULL) {
+            perror("search path, open dir error");
+        } else {
+            while ((dir = readdir(d)) != NULL) {
+                if (strcmp(dir->d_name, exe) == 0) {
+                    char *finalpath = malloc(strlen(pathdir) + strlen(exe) + 2);
+                    finalpath = strcat(finalpath, pathdir);
+                    finalpath = strcat(finalpath, "/");
+                    finalpath = strcat(finalpath, exe);
+                    return finalpath;
+                }
+            }
+        }
+        pathdir = strtok(NULL, ":");
+    }
+    return exe;
 }
