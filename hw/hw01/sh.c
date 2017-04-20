@@ -6,12 +6,12 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <dirent.h>
 
 // Simplifed xv6 shell.
 
 #define MAXARGS 10
-#define MAXBINFILEPATH 100
 
 // All commands have at least a type. Have looked at the type, the code
 // typically casts the *cmd to some specific cmd type.
@@ -40,7 +40,7 @@ struct pipecmd {
 
 int fork1(void);  // Fork but exits on failure.
 struct cmd *parsecmd(char*);
-char *searchpath(char *);
+char *searchpath(char *exe);
 
 // Execute cmd.  Never returns.
 void
@@ -63,7 +63,6 @@ runcmd(struct cmd *cmd)
     ecmd = (struct execcmd*)cmd;
     if(ecmd->argv[0] == 0)
       exit(0);
-    // Your code here ...  
     execv(searchpath(ecmd->argv[0]), ecmd->argv);
     perror("execute ecmd error");
     break;
@@ -71,29 +70,17 @@ runcmd(struct cmd *cmd)
   case '>':
   case '<':
     rcmd = (struct redircmd*)cmd;
-    // Your code here ...
-    if (close(rcmd->fd) == -1) {
-        perror("redir close error");    
-        exit(1);
-    }
-
-    if (cmd->type == '>') {
-        r = open(rcmd->file, rcmd->mode, S_IRWXU);
-    } else {
-        r = open(rcmd->file, rcmd->mode);
-    }
-    if (r == -1) {
-        perror("redir open error");
-        exit(1);
-    }
+    close(rcmd->fd);
+    open(rcmd->file, rcmd->mode, S_IRUSR | S_IWUSR);
     runcmd(rcmd->cmd);
     break;
 
   case '|':
     pcmd = (struct pipecmd*)cmd;
-    // Your code here ...
     pipe(p);
-    if (fork() == 0) {
+    int pid = fork();
+    int r;
+    if (pid == 0) {
         close(1);
         dup(p[1]);
         close(p[0]);
@@ -104,6 +91,7 @@ runcmd(struct cmd *cmd)
         dup(p[0]);
         close(p[0]);
         close(p[1]);
+        wait(&r);
         runcmd(pcmd->right);
     }
     break;
@@ -209,10 +197,10 @@ gettoken(char **ps, char *es, char **q, char **eq)
   int ret;
   
   s = *ps;
-  while(s < es && strchr(whitespace, *s))
+  while(s < es && strchr(whitespace, *s)) // skip ps first loc's str head whitespace
     s++;
   if(q)
-    *q = s;
+    *q = s; // q point to first not whtiespace str loc
   ret = *s;
   switch(*s){
   case 0:
@@ -231,11 +219,11 @@ gettoken(char **ps, char *es, char **q, char **eq)
     break;
   }
   if(eq)
-    *eq = s;
+    *eq = s; // eq point to last not whitespace str loc
   
   while(s < es && strchr(whitespace, *s))
     s++;
-  *ps = s;
+  *ps = s;  // ps final point to next not whitespace str loc
   return ret;
 }
 
@@ -298,22 +286,23 @@ parsepipe(char **ps, char *es)
   struct cmd *cmd;
 
   cmd = parseexec(ps, es);
-  if(peek(ps, es, "|")){
-    gettoken(ps, es, 0, 0);
+  if(peek(ps, es, "|")){ // if first is |
+    gettoken(ps, es, 0, 0); // skip |
     cmd = pipecmd(cmd, parsepipe(ps, es));
   }
   return cmd;
 }
 
+// if contain < or >, parse direct file and return new direct cmd, otherwise return source cmd
 struct cmd*
 parseredirs(struct cmd *cmd, char **ps, char *es)
 {
   int tok;
   char *q, *eq;
 
-  while(peek(ps, es, "<>")){
-    tok = gettoken(ps, es, 0, 0);
-    if(gettoken(ps, es, &q, &eq) != 'a') {
+  while(peek(ps, es, "<>")){ // first character is < or >
+    tok = gettoken(ps, es, 0, 0); // skip < or >, ret is < or >
+    if(gettoken(ps, es, &q, &eq) != 'a') { // ret must be a, gettoken shoult pass default branch, then q point to token first, eq point to token last
       fprintf(stderr, "missing file for redirection\n");
       exit(-1);
     }
@@ -342,8 +331,8 @@ parseexec(char **ps, char *es)
 
   argc = 0;
   ret = parseredirs(ret, ps, es);
-  while(!peek(ps, es, "|")){
-    if((tok=gettoken(ps, es, &q, &eq)) == 0)
+  while(!peek(ps, es, "|")){ // if first character is not |
+    if((tok=gettoken(ps, es, &q, &eq)) == 0) // parse one, or exist when at end
       break;
     if(tok != 'a') {
       fprintf(stderr, "syntax error\n");
@@ -362,29 +351,28 @@ parseexec(char **ps, char *es)
 }
 
 char *
-searchpath(char *exe)
-{
+searchpath(char *exe) {
     DIR *d;
     struct dirent *dir;
-    
+
     char *paths = getenv("PATH");
-    char *pathdir = strtok(paths, ":");
-    while (pathdir != NULL) {
-        d = opendir(pathdir);
+    char *one_path = strtok(paths, ":");
+    while (one_path != NULL) {
+        d = opendir(one_path);
         if (d == NULL) {
-            perror("search path, open dir error");
+            perror("open path dir error");
         } else {
             while ((dir = readdir(d)) != NULL) {
                 if (strcmp(dir->d_name, exe) == 0) {
-                    char *finalpath = malloc(strlen(pathdir) + strlen(exe) + 2);
-                    finalpath = strcat(finalpath, pathdir);
+                    char *finalpath = malloc(strlen(one_path) + 1 + strlen(exe) + 1);
+                    finalpath = strcat(finalpath, one_path);
                     finalpath = strcat(finalpath, "/");
                     finalpath = strcat(finalpath, exe);
                     return finalpath;
                 }
             }
         }
-        pathdir = strtok(NULL, ":");
+        one_path = strtok(NULL, ":");
     }
     return exe;
 }
